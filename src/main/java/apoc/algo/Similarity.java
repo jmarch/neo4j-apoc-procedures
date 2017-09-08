@@ -6,10 +6,12 @@ import org.neo4j.procedure.Description;
 import org.neo4j.procedure.Name;
 import org.neo4j.procedure.UserFunction;
 
+import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.ArrayList; 
+import java.util.Arrays; 
 
 
 public class Similarity {
@@ -70,16 +72,12 @@ public class Similarity {
 
     @UserFunction
     @Description("apoc.algo.minHashSimilarity([vector1], [vector2]) " +
-            "given two collection vectors, calculate MinHash similarity")
-    public double minHashSimilarity(@Name("vector1") List<Object> vector1, @Name("vector2") List<Object> vector2) {
-        final int HASHES = 400;  // 400 hashes gives 0.05 error rate on the estimator of the Jaccard similarity. 1/sqrt(k) 
-
-        List<String> vector1Hashes = minHashSignature(vector1, HASHES);
-        List<String> vector2Hashes = minHashSignature(vector2, HASHES);
-
+            "given two collection vectors, calculate a MinHash-based similarity")
+    public double minHashSimilarity(@Name("vector1") List<Object> vector1, @Name("vector2") List<Object> vector2, @Name(value = "hashes", defaultValue = "400") Long hashes) throws NoSuchAlgorithmException {
+        // Note: 400 hashes gives 0.05 error rate on the estimator of the Jaccard similarity. 1/sqrt(k) 
+        List<Long> vector1Hashes = minHashSignature(vector1, hashes);
+        List<Long> vector2Hashes = minHashSignature(vector2, hashes);
         int matches = 0;
-        int hashes = vector1Hashes.size();
-
         for (int h = 0; h < hashes; h++) {
             if (vector1Hashes.get(h).equals(vector2Hashes.get(h))) matches++;
         }
@@ -89,46 +87,28 @@ public class Similarity {
     @UserFunction
     @Description("apoc.algo.minHashSignature([vector])" +
             "given a collection vector, calculate a MinHash signature")
-    public List<String> minHashSignature(@Name("vector") List<Object> vector, @Name(value = "hashes", defaultValue = "400") double hashes) {
-        ArrayList<String> result = new ArrayList<String>();
+    public List<Long> minHashSignature(@Name("vector") List<Object> vector, @Name(value = "hashes", defaultValue = "400") Long hashes) throws NoSuchAlgorithmException {
+        ArrayList<Long> result = new ArrayList<Long>();
         for (int h = 0; h < hashes; h++) {
-            String salt = String.valueOf(h);
-            result.add(minHashOnce(vector, salt));
+            result.add(minHashOnce(vector, String.valueOf(h)));  // use h index as salt to re-randomize the hash function
         }
         return result;
     }
 
     @UserFunction
     @Description("apoc.algo.minHashOnce([vector], [salt])" +
-            "given a collection vector and salt, calculate MinHash value")
-    public String minHashOnce(@Name("vector") List<Object> vector, @Name("salt") Object salt) {
-        String currMin = "ffffffffffffffffffffffffffffffff";
-        String saltStr;
-        try {
-            saltStr = salt.toString();
-        } catch (Exception e) {
-            saltStr = String.valueOf(salt);
+            "given a collection vector and salt, calculate a MinHash value")
+    public Long minHashOnce(@Name("vector") List<Object> vector, @Name("salt") Object salt) throws NoSuchAlgorithmException {
+        String saltStr = String.valueOf(salt);
+        MessageDigest messageDigest = MessageDigest.getInstance("MD5");
+        Long currMin = Long.MAX_VALUE;
+        for (Object value : vector) {
+            String input = String.valueOf(value) + saltStr;
+            messageDigest.update(input.getBytes());
+            byte[] md5sum = messageDigest.digest();  // implicitly resets messageDigest for next iteration
+            Long hashedValue = new BigInteger(1, Arrays.copyOfRange(md5sum, 0, 8)).longValue();
+            if (hashedValue < currMin) currMin = hashedValue;
         }
-        MessageDigest messageDigest;
-        try {
-            messageDigest = MessageDigest.getInstance("MD5");
-            for (int i = 0; i < vector.size(); i++) {
-                String input;
-                try {
-                    input = vector.get(i).toString() + saltStr;
-                } catch (Exception e) {
-                    input = String.valueOf(vector.get(i)) + saltStr;
-                }
-                messageDigest.update(input.getBytes());
-                byte[] digest = messageDigest.digest();  // implicitly resets messageDigest for next iteration
-                StringBuffer sb = new StringBuffer();
-                for (byte b : digest) {
-                    sb.append(String.format("%02x", b & 0xff));
-                }
-                String hashedValue = sb.toString();
-                if (hashedValue.compareTo(currMin) < 0) currMin = hashedValue;
-            }
-        } catch (NoSuchAlgorithmException e) {}
         return currMin;
     }
 }
